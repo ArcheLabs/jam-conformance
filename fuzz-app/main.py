@@ -302,7 +302,7 @@ def _log_tail_has_error(path: Path, n: int = 10) -> bool:
     """Check if any of the last *n* lines of a log file contain 'Error'."""
     try:
         tail, _ = _read_tail(path, n)
-        return any("Error" in line for line in tail)
+        return any("error" in line.lower() for line in tail)
     except (OSError, ValueError):
         return False
 
