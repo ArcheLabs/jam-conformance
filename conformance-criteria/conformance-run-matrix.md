@@ -1,6 +1,6 @@
 # Conformance Run Matrix (Proposed)
 
-Date: 2026-03-02
+Date: 2026-03-16
 
 ## Goals
 
@@ -11,104 +11,111 @@ Date: 2026-03-02
 
 - Teams have to satisfy different tests to cover as much as possible about the Jam specification.
 - We use our own Fuzzer as part of this test programme as a best-effort tool to determine correct behaviour, but this is not the only test.
-- The test programme is divided in different lanes and teams have to pass all of them. 
+- The test programme is divided in different lanes and teams have to pass all of them.
 
 - Lanes:
-    * [L1 - Minimum behaviour conformance]: run implementation against all published and well-known Test-Vectors. 
-        - Teams have to pass all known (and applicable to M1) JAM test-vectors.
-        - This ensures that teams don't break any well-known behaviour conditions. 
-    * [L2 - Happy Path]: run implementation for a large number of steps (100k or 1M?) without mutations. 
-        - This ensures that teams can import well-formed blocks one after another, with Work-Packages exercising two different services (Bootstrap and Fuzzing)
-        - Teams have to import all blocks without error.
-        - Use seeds that have not yet been used in published reports or traces.
-        - Also, if we want smaller seeds (for example 1 byte) only 42 has been used, so we can pick any other numbers.
-    * [L3 - Bad block detection - mutations]: run several shorter runs (for 10k steps?) using only mutations to intentionally generate possible error conditions. 
-        - Teams have to reach the same response as our Fuzzer
-        - This ensures teams can detect error conditions and not import bad blocks.
-    * [L4 - (Optional) Exploratory Error]: run against selected traces or parameter combinations that in the past have highlighted selected mismatch categories from some teams.
-        - Although teams may react differently to the same trace, these runs will be known to have generated particular classes in the past.
-        - This test demonstrates teams have corrected against such known mismatches
-        - There is no guarantee that these runs will ever trigger the same mismatch category that was seen in the past.
+    * L1 -- Known Test Vectors: run implementation against all published and well-known test vectors.
+    * L2 -- Mutations: testing happy-path import and mutation/error handling, without Safrole.
+        - L2a -- Tiny profile (1M steps, 5 work items)
+        - L2b -- Full profile (10K steps, 16 work items)
+    * L3 -- Safrole: exercising Safrole with slot-skipping, no mutations.
+        - L3a -- Tiny profile (10K steps)
+        - L3b -- Full profile (10K steps)
 
-## L1 — Known Test Vectors
-
-### Parameters
-
-- ???
+## L1 -- Known Test Vectors
 
 ### Acceptance Criteria
 
 - 100% pass of required known vectors.
 - Any mismatch is a hard conformance failure.
+- Self-assessed by the implementor; no explicit assessment performed during evaluation.
 
-## L2 — Happy Path
+## L2 -- Mutations
 
-### Parameters
+Testing both happy-path import and mutation/error handling, without Safrole.
 
-- profile: full
-- fuzzy_profile: full
-- max_mutations: 0
-- mutation_ratio: 0.0
-- max_work_items: 3
-- max_steps: 100000
-- safrole: false
-- seeds: 10 pre-determined seeds (if 100k steps); 1 pre-determined seed (if 1M steps)
+### L2a -- Tiny
 
-### Execution
+| Parameter | Value |
+|-----------|-------|
+| jam_profile | full |
+| profile | full |
+| fuzzy_profile | full |
+| max_mutations | 5 |
+| mutation_ratio | 0.1 |
+| max_work_items | 5 |
+| max_steps | 1000000 |
+| safrole | false |
+| skip_slots | false |
+| seeds | 10 random |
 
-- Run each team with all seeds.
+### L2b -- Full
 
-### Acceptance Criteria
+| Parameter | Value |
+|-----------|-------|
+| jam_profile | full |
+| profile | full |
+| fuzzy_profile | full |
+| max_mutations | 5 |
+| mutation_ratio | 0.1 |
+| max_work_items | 16 |
+| max_steps | 10000 |
+| safrole | false |
+| skip_slots | false |
+| seeds | 10 random |
 
-- No import mismatch (`exp == got` every step)
-- No state diff
-- Session reaches `max_steps`
+### Acceptance Criteria (L2a/L2b)
 
----
+- Expected state root matches target state root on every step.
+- Session reaches `max_steps`.
 
-## L3B — Mutations
+## L3 -- Safrole
 
-### Parameters
+Two sub-runs escalating from minimal to full profiles. Both enable `skip_slots` alongside `safrole`.
 
-- profile: empty
-- max_mutations: 3 / 5 / 10 (run each)
-- mutation_ratio: 0.1
-- max_work_items: 5 and 16
-- max_steps: 10000
-- safrole: false
-- seed: 42
+### L3a -- Tiny
 
-### Known evidence samples
+| Parameter | Value |
+|-----------|-------|
+| jam_profile | tiny |
+| profile | empty |
+| fuzzy_profile | empty |
+| safrole | true |
+| max_mutations | 0 (forced) |
+| mutation_ratio | 0.0 |
+| max_work_items | 0 |
+| max_steps | 10000 |
+| skip_slots | true |
+| seeds | 10 random |
 
-- [fuzz-reports/baseline_traces_0.7.1/reports/fastroll/1761651767/report.json](../fuzz-reports/baseline_traces_0.7.1/reports/fastroll/1761651767/report.json)
-- [fuzz-reports/baseline_traces_0.7.1/reports/fastroll/1761651837/report.json](../fuzz-reports/baseline_traces_0.7.1/reports/fastroll/1761651837/report.json)
-- [fuzz-reports/0.7.1/archive_reports/fastroll/1761585612/report.json](../fuzz-reports/0.7.1/archive_reports/fastroll/1761585612/report.json)
+### L3b -- Full
 
-### Acceptance Criteria
+| Parameter | Value |
+|-----------|-------|
+| jam_profile | full |
+| profile | full |
+| fuzzy_profile | full |
+| safrole | true |
+| max_mutations | 0 (forced) |
+| mutation_ratio | 0.0 |
+| max_work_items | 5 |
+| max_steps | 10000 |
+| skip_slots | true |
+| seeds | 10 random |
 
-- Fuzzer must emit known reject class.
-- Team behavior must match the Fuzzer's
+### Acceptance Criteria (L3a/L3b)
 
-## L3B (2) — Mutations 
+- Expected state root matches target state root on every step.
+- Session reaches `max_steps`.
 
-### Parameters
+## Final Acceptance
 
-- profile: full
-- fuzzy_profile: full
-- max_mutations: 5
-- mutation_ratio: 0.1
-- max_work_items: 5
-- max_steps: 10000
-- safrole: false
-- seeds: 10 (mix of known + new)
+After all test lanes pass, two additional steps are required before complete acceptance:
 
-### Note
+1. Fellowship code review
+2. Final interview
 
-In current historical reports, there is no strong prior for `profile=full` with `max_mutations>0` yielding `exp != ok`.
-Treat this lane as exploratory discovery and triage.
+## References
 
-### Acceptance Criteria
-
-- Not a hard failure lane by itself.
-- Any divergence must be reproducible on rerun with same seed/config.
-
+- JAM tiny profile: https://docs.jamcha.in/basics/chain-spec/tiny
+- JAM full profile: https://docs.jamcha.in/basics/chain-spec/full
