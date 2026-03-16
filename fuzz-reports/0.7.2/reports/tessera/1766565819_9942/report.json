@@ -17,14 +17,14 @@
         "steps": 3,
         "imported": 2,
         "import_max_step": 2,
-        "import_min": 6.174644,
-        "import_max": 6.870704,
-        "import_mean": 6.522674,
-        "import_p50": 6.87,
-        "import_p75": 6.87,
-        "import_p90": 6.87,
-        "import_p99": 6.87,
-        "import_std_dev": 0.4921887461127087
+        "import_min": 8.389361999999998,
+        "import_max": 12.953607,
+        "import_mean": 10.671484499999998,
+        "import_p50": 12.953,
+        "import_p75": 12.953,
+        "import_p90": 12.953,
+        "import_p99": 12.953,
+        "import_std_dev": 3.2274085904967937
     },
     "target": {
         "info": {
@@ -33,7 +33,7 @@
             "jam_version": {
                 "major": 0,
                 "minor": 7,
-                "patch": 0
+                "patch": 2
             },
             "app_version": {
                 "major": 1,
@@ -46,17 +46,31 @@
             "steps": 3,
             "imported": 2,
             "import_max_step": 3,
-            "import_min": 150.96869900000002,
-            "import_max": 232.880589,
-            "import_mean": 191.924644,
-            "import_p50": 232.88,
-            "import_p75": 232.88,
-            "import_p90": 232.88,
-            "import_p99": 232.88,
-            "import_std_dev": 57.92045287880653
+            "import_min": 149.26393299999998,
+            "import_max": 233.883824,
+            "import_mean": 191.57387849999998,
+            "import_p50": 233.883,
+            "import_p75": 233.883,
+            "import_p90": 233.883,
+            "import_p99": 233.883,
+            "import_std_dev": 59.83529874936653
         }
     },
     "error": {
-        "communication": "Unexpected response"
+        "state_diff": {
+            "roots": {
+                "exp": "0x030c5d58e0e217e9a4c5c795a32e7bf202365d2a1de3b3b6a4878e1f49f32a75",
+                "got": "0x1b637d8a567a1583c6583409d802de820c10be564ef74eb826714f9c7c7031fd"
+            },
+            "keyvals": [
+                {
+                    "key": "0xff000000000000000000000000000000000000000000000000000000000000",
+                    "diff": {
+                        "exp": "0x00d1b097b4410b3a63446d7c57d093972a9744fcd2d74f4a5e2ec163610e6d6327ffffffffffffffff0a000000000000000a00000000000000d819020000000000ffffffffffffffff07000000000000000200000000000000",
+                        "got": "0x00d1b097b4410b3a63446d7c57d093972a9744fcd2d74f4a5e2ec163610e6d6327ffffffffffffffff0a000000000000000a000000000000005019020000000000ffffffffffffffff04000000000000000200000000000000"
+                    }
+                }
+            ]
+        }
     }
 }
