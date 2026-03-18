@@ -35,3 +35,5 @@
 * turbojam (c++)
 * typeberry (ts)
 * vinwolf (rust)
+
+[Summary](./0.7.2/summaries/summary-table.md)
