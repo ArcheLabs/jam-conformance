@@ -732,7 +732,7 @@ def run_trace_workflow(args, target):
     print("===================================================")
     print("Summary of results:")
 
-    summary_file = os.path.join(SESSION_DIR, f"summary_{target}.txt")
+    summary_file = os.path.join(SESSION_DIR, f"{target}.txt")
     with open(summary_file, 'w') as f:
         f.write(f"Summary of results for {target}\n")
         f.write("=" * 50 + "\n")
