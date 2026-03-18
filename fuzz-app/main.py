@@ -40,6 +40,7 @@ def _conf(key: str, env_var: str, default):
 POLKAJAM_FUZZ_BIN = _conf("polkajam_fuzz_bin", "POLKAJAM_FUZZ_BIN", "")
 _scripts_dir = _conf("scripts_dir", "JAM_FUZZ_SCRIPTS_DIR", "")
 SESSIONS_BASE = Path(_conf("sessions_dir", "JAM_FUZZ_SESSIONS_DIR", Path.cwd() / "sessions"))
+_targets_dir = _conf("targets_dir", "JAM_FUZZ_TARGETS_DIR", "")
 
 # UI defaults (used by FuzzRequest and served to the frontend).
 UI_DEFAULTS = {
@@ -258,6 +259,8 @@ async def start_fuzz(req: FuzzRequest):
     env["JAM_FUZZ_SEED"] = str(seed)
     env["JAM_FUZZ_SESSIONS_DIR"] = str(SESSIONS_BASE)
     env["JAM_FUZZ_REMOTE_TIMEOUT"] = "120" # 2 min
+    if _targets_dir:
+        env["JAM_FUZZ_TARGETS_DIR"] = _targets_dir
     if req.safrole:
         env["JAM_FUZZ_SAFROLE"] = "1"
     if req.skip_slots:
