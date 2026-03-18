@@ -229,10 +229,14 @@ def parse_command_line_args():
 
 
 def polkajam_fuzz_bin():
-    if not os.environ.get("POLKAJAM_FUZZ_BIN"):
-        print("Error: POLKAJAM_FUZZ_BIN is not defined.")
-        exit(1)
-    bin_path = os.environ["POLKAJAM_FUZZ_BIN"]
+    bin_path = os.environ.get("POLKAJAM_FUZZ_BIN", "polkajam-fuzz")
+    # If it's not a path (no separators), resolve it via PATH
+    if os.sep not in bin_path:
+        resolved = shutil.which(bin_path)
+        if resolved is None:
+            print(f"Error: POLKAJAM_FUZZ_BIN '{bin_path}' not found in PATH.")
+            exit(1)
+        return resolved
     if not os.path.isfile(bin_path):
         print(f"Error: POLKAJAM_FUZZ_BIN '{bin_path}' is not a valid file.")
         exit(1)
