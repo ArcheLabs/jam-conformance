@@ -189,5 +189,17 @@
     "image": "shimonchick/pbnjam-fuzzer-target:latest",
     "cmd": "--socket {TARGET_SOCK}",
     "gp_version": "0.7.2"
+  },
+  "jambda": {
+    "repo": "ArcheLabs/jambda-release",
+    "file": {
+      "linux": "jambda-node-Linux-x64"
+    },
+    "cmd": {
+      "linux": "jambda-node-Linux-x64"
+    },
+    "args": "fuzz-target --sock {TARGET_SOCK}",
+    "env": "RUST_LOG=off",
+    "gp_version": "0.7.2"
   }
 }
