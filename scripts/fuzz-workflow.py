@@ -102,13 +102,13 @@ def parse_command_line_args():
         "-p", "--profile", type=str, default="full", help="Fuzzing profile to use"
     )
     parser.add_argument(
-        "--fuzzy-profile", type=str, default="rand", help="Fuzzy service profile to use"
+        "--fuzzy-profile", type=str, default="full", help="Fuzzy service profile to use"
     )
     parser.add_argument(
         "-m",
         "--max-mutations",
         type=int,
-        default=0,
+        default=5,
         help="Maximum number of mutations to apply",
     )
     parser.add_argument(
@@ -381,6 +381,8 @@ def run_fuzzer_trace_mode(target, trace_dir, log_file):
         input_trace_dir,
         "--target-sock",
         SESSION_TARGET_SOCK,
+        "--max-mutations",
+        "0",
         "--verbosity",
         VERBOSITY,
         "--pvm-interpreter-backend",

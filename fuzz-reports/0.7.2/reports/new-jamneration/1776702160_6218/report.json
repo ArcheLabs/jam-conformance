@@ -1,0 +1,76 @@
+{
+    "config": {
+        "seed": "42",
+        "max_steps": 4294967295,
+        "safrole": false,
+        "profile": {
+            "full": null
+        },
+        "fuzzy_profile": {
+            "full": null
+        },
+        "max_work_items": 5,
+        "mutation_ratio": 0.1,
+        "max_mutations": 0
+    },
+    "stats": {
+        "steps": 2,
+        "imported": 1,
+        "import_max_step": 2,
+        "import_min": 18.626602,
+        "import_max": 18.626602,
+        "import_mean": 18.626602,
+        "import_p50": 18.626602,
+        "import_p75": 0.0,
+        "import_p90": 18.626602,
+        "import_p99": 0.0,
+        "import_std_dev": 0.0
+    },
+    "target": {
+        "info": {
+            "fuzz_version": 1,
+            "fuzz_features": 2,
+            "jam_version": {
+                "major": 0,
+                "minor": 7,
+                "patch": 2
+            },
+            "app_version": {
+                "major": 0,
+                "minor": 3,
+                "patch": 1
+            },
+            "app_name": "new_jamneration"
+        },
+        "stats": {
+            "steps": 2,
+            "imported": 1,
+            "import_max_step": 2,
+            "import_min": 92.53445,
+            "import_max": 92.53445,
+            "import_mean": 92.53445,
+            "import_p50": 92.53445,
+            "import_p75": 0.0,
+            "import_p90": 92.53445,
+            "import_p99": 0.0,
+            "import_std_dev": 0.0
+        }
+    },
+    "error": {
+        "state_diff": {
+            "roots": {
+                "exp": "0x39334b392f9492277367be466496a6f4a574f96bcc3d6f03b9aef9412699074f",
+                "got": "0x85ea54bb835c5185dfbe0ec6901e88d63e158bd1b30b0903130fb3a359949a96"
+            },
+            "keyvals": [
+                {
+                    "key": "0x3c53ca4bfd66e17b4bbd1f80c0d878acf0ad5eacd24a9af4de37b7cc1b081d",
+                    "diff": {
+                        "exp": "0x9d0f8676628842f4cf568d60beed784c566f71ed1326d428d6660d822460d87f538ffb62cf377b2534045e404d0644559143ed3074c7c5b5448abe7ab4bb402cfa385bfb48581e6693bfca4e05ee9368df392227322f6a36e6cd",
+                        "got": "0x"
+                    }
+                }
+            ]
+        }
+    }
+}
