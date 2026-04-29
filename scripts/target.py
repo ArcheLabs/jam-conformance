@@ -18,10 +18,14 @@ from dataclasses import dataclass
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
-DEFAULT_SOCK = "/tmp/jam_target.sock"
+# HOST-side data directory for all fuzz-related temporary files.
+# When running in Docker, this directory is mounted to CONTAINER_DATA_PATH inside the container.
+# Can be overridden via JAM_FUZZ_DATA_PATH environment variable (set by fuzz-workflow.py per session).
+HOST_DATA_PATH = os.environ.get("JAM_FUZZ_DATA_PATH", "/tmp/jam_fuzz")
 
-# Set DEFAULT_SOCK to /tmp/jam_target.sock if not already set
-TARGET_SOCK = os.environ.get("JAM_FUZZ_TARGET_SOCK", DEFAULT_SOCK)
+# HOST-side path to the Unix domain socket used for fuzzer-target communication.
+# Always derived from HOST_DATA_PATH; socket file is created inside the mounted data directory.
+HOST_SOCK_PATH = os.path.join(HOST_DATA_PATH, "fuzz.sock")
 
 # Used to run binaries when target is not provided as a docker image
 DEFAULT_DOCKER_IMAGE = "debian:stable-slim"
@@ -111,26 +115,26 @@ def load_targets() -> Dict[str, Target]:
     targets = {}
 
     for target_name, target_config in targets_data.items():
-        # Process string values to replace {TARGET_SOCK} placeholder
+        # Process string values to replace {SOCK_PATH} placeholder
         processed_config = {}
         for key, value in target_config.items():
-            if isinstance(value, str) and "{TARGET_SOCK}" in value:
-                processed_config[key] = value.format(TARGET_SOCK=CONTAINER_SOCK_PATH)
+            if isinstance(value, str) and "{SOCK_PATH}" in value:
+                processed_config[key] = value.format(SOCK_PATH=CONTAINER_SOCK_PATH)
             elif isinstance(value, dict):
                 # Handle nested dictionaries (file.linux, cmd.macos, etc.)
                 processed_dict = {}
                 for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str) and "{TARGET_SOCK}" in sub_value:
+                    if isinstance(sub_value, str) and "{SOCK_PATH}" in sub_value:
                         processed_dict[sub_key] = sub_value.format(
-                            TARGET_SOCK=CONTAINER_SOCK_PATH
+                            SOCK_PATH=CONTAINER_SOCK_PATH
                         )
                     elif isinstance(sub_value, list):
                         # Handle lists in nested dictionaries
                         processed_list = []
                         for item in sub_value:
-                            if isinstance(item, str) and "{TARGET_SOCK}" in item:
+                            if isinstance(item, str) and "{SOCK_PATH}" in item:
                                 processed_list.append(
-                                    item.format(TARGET_SOCK=CONTAINER_SOCK_PATH)
+                                    item.format(SOCK_PATH=CONTAINER_SOCK_PATH)
                                 )
                             else:
                                 processed_list.append(item)
@@ -142,13 +146,13 @@ def load_targets() -> Dict[str, Target]:
                 # Handle lists (args, cmd as list)
                 processed_list = []
                 for item in value:
-                    if isinstance(item, str) and "{TARGET_SOCK}" in item:
-                        processed_list.append(item.format(TARGET_SOCK=CONTAINER_SOCK_PATH))
+                    if isinstance(item, str) and "{SOCK_PATH}" in item:
+                        processed_list.append(item.format(SOCK_PATH=CONTAINER_SOCK_PATH))
                     else:
                         processed_list.append(item)
                 processed_config[key] = processed_list
-            elif isinstance(value, str) and "{TARGET_SOCK}" in value:
-                processed_config[key] = value.format(TARGET_SOCK=CONTAINER_SOCK_PATH)
+            elif isinstance(value, str) and "{SOCK_PATH}" in value:
+                processed_config[key] = value.format(SOCK_PATH=CONTAINER_SOCK_PATH)
             else:
                 processed_config[key] = value
 
@@ -186,7 +190,7 @@ Examples:
   %(prog)s info all                   # Show info for all targets
 
 Environment variables:
-  JAM_FUZZ_TARGET_SOCK     Socket path (default: /tmp/jam_target.sock)
+  JAM_FUZZ_DATA_PATH       Host data directory (default: /tmp/jam_fuzz)
   JAM_FUZZ_RUN_DOCKER      Run in Docker (1) or host (0) (default: 1)
   JAM_FUZZ_DOCKER_CPU_SET  CPU set for Docker containers (default: 16-32)
 
@@ -196,6 +200,13 @@ Use 'info all' to see available targets.
 
     parser.add_argument(
         "--os", choices=["linux", "macos"], help="Target OS (default: auto-detected)"
+    )
+
+    parser.add_argument(
+        "--spec",
+        choices=["tiny", "full"],
+        default=None,
+        help="Specification to use (tiny or full, overrides JAM_FUZZ_SPEC env var)"
     )
 
     subparsers = parser.add_subparsers(
@@ -587,38 +598,27 @@ def run_docker_image(target: str, args=None) -> None:
         print(f"Please run: {sys.argv[0]} get {target}")
         sys.exit(1)
 
-    # Create a dedicated temporary directory for the container to avoid polluting host /tmp
-    container_tmp_dir = tempfile.mkdtemp(prefix=f"jam_{container_name}_")
-    # Ensure the directory is world-writable so the container user can create files
-    # (needed for rootless Docker where the mapped user may differ from the host user)
-    os.chmod(container_tmp_dir, 0o777)
-    print(f"Container temp dir: {container_tmp_dir}")
-
-
-    # Remove existing socket/symlink if present
+    # Clean start: remove any leftover data directory from previous runs
+    # This ensures the socket and other runtime files are fresh
     try:
-        os.unlink(TARGET_SOCK)
+        shutil.rmtree(HOST_DATA_PATH)
     except FileNotFoundError:
         pass
 
-    # Symlink so the host can reach the in-container socket via TARGET_SOCK
-    host_socket_path = os.path.join(container_tmp_dir, "fuzz.sock")
-    os.symlink(host_socket_path, TARGET_SOCK)
-    print(f"Socket symlink: {TARGET_SOCK} -> {host_socket_path}")
+    # Create host data directory
+    os.makedirs(HOST_DATA_PATH, exist_ok=True)
+    # Ensure the directory is world-writable so the container user can create files
+    # (needed for rootless Docker where the mapped user may differ from the host user)
+    os.chmod(HOST_DATA_PATH, 0o777)
+    print(f"Host data path: {HOST_DATA_PATH}")
 
     def cleanup_docker():
         print(f"Cleaning up Docker container {container_name}...")
         subprocess.run(["docker", "kill", container_name], capture_output=True)
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
-        # Remove the symlink
+        # Remove ephemeral data directory and socket files created during this run
         try:
-            os.unlink(TARGET_SOCK)
-        except FileNotFoundError:
-            pass
-        # Remove the dedicated temp directory and all its contents
-        try:
-            shutil.rmtree(container_tmp_dir, ignore_errors=True)
-            print(f"Cleaned up container temp dir: {container_tmp_dir}")
+            shutil.rmtree(HOST_DATA_PATH)
         except FileNotFoundError:
             pass
 
@@ -677,7 +677,7 @@ def run_docker_image(target: str, args=None) -> None:
         "--cap-add",
         "IPC_LOCK",
         "-v",
-        f"{container_tmp_dir}:{CONTAINER_DATA_PATH}",
+        f"{HOST_DATA_PATH}:{CONTAINER_DATA_PATH}",
     ]
 
     # In rootful Docker, run as the host user so files are owned correctly.
@@ -688,8 +688,10 @@ def run_docker_image(target: str, args=None) -> None:
 
     # Standard JAM fuzz packaging environment variables (see fuzz-proto/README.md).
     # Set first so target.json `env` and --target-env can still override them.
+    spec = args.spec if (args and hasattr(args, 'spec') and args.spec) else os.environ.get('JAM_FUZZ_SPEC', 'tiny')
     docker_cmd.extend([
-        "-e", f"JAM_FUZZ_SPEC={os.environ.get('JAM_FUZZ_SPEC', 'tiny')}",
+        "-e", "JAM_FUZZ=1",
+        "-e", f"JAM_FUZZ_SPEC={spec}",
         "-e", f"JAM_FUZZ_DATA_PATH={CONTAINER_DATA_PATH}",
         "-e", f"JAM_FUZZ_SOCK_PATH={CONTAINER_SOCK_PATH}",
         "-e", f"JAM_FUZZ_LOG_LEVEL={os.environ.get('JAM_FUZZ_LOG_LEVEL', 'info')}",
@@ -1027,7 +1029,8 @@ def run_target(target: str, os_name: str, args=None) -> None:
                 except ProcessLookupError:
                     pass
             try:
-                os.unlink(TARGET_SOCK)
+                # Remove ephemeral data directory and socket files created during this run
+                shutil.rmtree(HOST_DATA_PATH)
             except FileNotFoundError:
                 pass
 
@@ -1046,6 +1049,10 @@ def run_target(target: str, os_name: str, args=None) -> None:
                 if "=" in var:
                     key, value = var.split("=", 1)
                     os.environ[key] = value
+
+        # Set JAM_FUZZ_SPEC from CLI arg (overrides env var)
+        if args and hasattr(args, 'spec') and args.spec:
+            os.environ['JAM_FUZZ_SPEC'] = args.spec
 
         if args.target_env:
             for var in args.target_env.split():

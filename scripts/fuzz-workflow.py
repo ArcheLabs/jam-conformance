@@ -16,6 +16,14 @@
 #   in an exploratory session to generate new traces.
 # - trace mode, which runs a group of existing traces against several targets,
 #   and is meant to regenerate reports for existing traces.
+#
+# Data organization:
+# - SESSION_DATA_PATH: /tmp/jam_fuzz/{SESSION_ID} (ephemeral, cleaned up after each run)
+#   Contains socket and target runtime data passed to target.py via JAM_FUZZ_DATA_PATH
+# - SESSION_DIR: sessions/{SESSION_ID} (persistent)
+#   Contains traces, reports, logs from the fuzzing session
+# - SESSION_TARGET_SOCK: SESSION_DATA_PATH/fuzz.sock
+#   Unix domain socket for fuzzer-target communication
 
 import json
 import os
@@ -51,6 +59,7 @@ SESSIONS_DIR = os.environ.get("JAM_FUZZ_SESSIONS_DIR", f"{CURRENT_DIR}/sessions"
 
 # Fuzzing session id, defaults to unix timestamp
 SESSION_ID = os.environ.get("JAM_FUZZ_SESSION_ID", str(int(time.time())))
+
 # Session dir
 SESSION_DIR = os.path.join(SESSIONS_DIR, SESSION_ID)
 # The directory where we store the traces for one fuzzer session
@@ -62,8 +71,10 @@ SESSION_LOGS_DIR = os.path.join(SESSION_DIR, "logs")
 # The directory where failed traces are stored
 SESSION_FAILED_TRACES_DIR = os.path.join(SESSION_DIR, "failed_traces_reports")
 
+# Per-session ephemeral fuzz data directory (socket, target data, etc.)
+SESSION_DATA_PATH = os.path.join("/tmp/jam_fuzz", SESSION_ID)
 # Target unix domain socket
-SESSION_TARGET_SOCK = os.environ.get("JAM_FUZZ_TARGET_SOCK", f"/tmp/jam_fuzz_{SESSION_ID}.sock")
+SESSION_TARGET_SOCK = os.path.join(SESSION_DATA_PATH, "fuzz.sock")
 
 # Global environment variables that affect the fuzzer.
 SEED = os.environ.get("JAM_FUZZ_SEED", "42")
@@ -452,9 +463,13 @@ def run_target(target, log_file):
     """Run the target"""
     print(f"* Running target: {target}")
 
-    if os.path.exists(SESSION_TARGET_SOCK):
-        os.remove(SESSION_TARGET_SOCK)
-        print(f"Removed existing socket: {SESSION_TARGET_SOCK}")
+    # Clean up ephemeral data directory from previous runs (target.py will also do this)
+    # This ensures a fresh state even if target.py subprocess fails to clean up
+    try:
+        shutil.rmtree(SESSION_DATA_PATH)
+        print(f"Cleaned up ephemeral data directory: {SESSION_DATA_PATH}")
+    except FileNotFoundError:
+        pass
 
     target_command = [
         os.path.join(JAM_CONFORMANCE_DIR, "scripts/target.py"),
@@ -472,7 +487,7 @@ def run_target(target, log_file):
         # Set up environment variables for the subprocess
         env = os.environ.copy()
         env["JAM_FUZZ_TARGETS_DIR"] = TARGETS_DIR
-        env["JAM_FUZZ_TARGET_SOCK"] = SESSION_TARGET_SOCK
+        env["JAM_FUZZ_DATA_PATH"] = SESSION_DATA_PATH
         target_process = subprocess.Popen(
             target_command,
             stdin=subprocess.DEVNULL,
