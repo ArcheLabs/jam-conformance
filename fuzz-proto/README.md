@@ -334,3 +334,64 @@ python minifuzz/minifuzz.py -d examples/v1/forks --target-sock /tmp/jam_target.s
 # For targets not supporting forks  
 python minifuzz/minifuzz.py -d examples/v1/no_forks --target-sock /tmp/jam_target.sock
 ```
+
+---
+
+## Standard Target Packaging
+
+### Docker Image
+
+Targets MUST be distributed as Docker images. Ideally, images should be kept
+lightweight and minimal; avoid inflating already large base images.
+
+### Entry Point
+
+The container's entry point requires the following environment variables
+to be explicitly set before startup:
+
+| Variable             | Description |
+|----------------------|-------------|
+| `JAM_FUZZ`           | Enable fuzz mode for the target image. |
+| `JAM_FUZZ_SPEC`      | Protocol parameters set: `tiny` or `full`. |
+| `JAM_FUZZ_DATA_PATH` | Directory for target data persistence. |
+| `JAM_FUZZ_SOCK_PATH` | Path to Unix domain socket for fuzzer communication. The target can assume that no file is present here. |
+| `JAM_FUZZ_LOG_LEVEL` | Log verbosity: `error`, `warn`, `info`, `debug`, `trace`. Optional. |
+
+When `JAM_FUZZ` is defined, the variables `JAM_FUZZ_SPEC`, `JAM_FUZZ_DATA_PATH` and `JAM_FUZZ_SOCK_PATH` 
+MUST all be provided; targets MUST refuse to start if any are missing.
+When `JAM_FUZZ` is not defined, the target operates in normal mode and these variables are ignored.
+
+Environment variables are used in place of command line arguments to align
+with the prevailing convention for service-style container images.
+They integrate directly with `docker run -e` without requiring the entry point
+to be overridden.
+
+#### Examples
+
+```bash
+# Running in fuzz mode
+docker run -e JAM_FUZZ=1 \
+           -e JAM_FUZZ_SPEC=tiny \
+           -e JAM_FUZZ_DATA_PATH=/tmp/jam/data/ \
+           -e JAM_FUZZ_SOCK_PATH=/tmp/jam/fuzz.sock \
+           -e JAM_FUZZ_LOG_LEVEL=info \
+           my-jam-target:latest
+```
+
+**Note on `JAM_FUZZ_DATA_PATH`**: This directory is mapped to a host folder.
+Implementors are free to use it for caching (e.g. to improve start-up time
+for performance-related testing). However, during official assessment this
+folder will be cleaned up to ensure a fresh start.
+
+### Session Lifetime
+
+When the fuzzer disconnects, the target must remain active and listening on
+its Unix domain socket, ready to accept a new fuzzer connection. Multiple
+fuzzing sessions must be supported in sequence without restarting the
+container.
+
+Each session begins with a fresh handshake and exactly one `Initialize` message.
+The target must not accept multiple `Initialize` messages within a single session;
+if a second `Initialize` is received, the target should close the connection.
+
+Upon receiving `Initialize`, the target should reset any per-session state.
