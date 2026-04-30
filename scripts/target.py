@@ -63,6 +63,14 @@ class Target:
     post: Optional[str] = None
     gp_version: Optional[str] = None
 
+    def get_image_with_tag(self) -> Optional[str]:
+        """Get the full image reference with tag. Defaults to 'latest' if no tag is present."""
+        if not self.image:
+            return None
+        if ':' in self.image:
+            return self.image
+        return f"{self.image}:latest"
+
     def get_file(self, os_name: str) -> Optional[str]:
         """Get the file for the given OS."""
         if not self.file:
@@ -443,7 +451,7 @@ def get_docker_image(target: str) -> bool:
         return False
 
     target_obj = TARGETS[target]
-    docker_image = target_obj.image
+    docker_image = target_obj.get_image_with_tag()
 
     if not docker_image:
         print(f"Error: No Docker image specified for {target}")
@@ -575,7 +583,7 @@ def run_docker_image(target: str, args=None) -> None:
         return
 
     target_obj = TARGETS[target]
-    image = target_obj.image
+    image = target_obj.get_image_with_tag()
     cmd = target_obj.cmd
     env = target_obj.env
 
@@ -779,7 +787,7 @@ def print_target_info(target: Target, os_name: str) -> None:
     elif target.is_docker_target():
         # Check if Docker image exists locally
         try:
-            print_docker_image_info(target.image)
+            print_docker_image_info(target.get_image_with_tag())
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("Status: Not downloaded (Docker image not found locally)")
     else:
