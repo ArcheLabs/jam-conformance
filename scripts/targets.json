@@ -68,7 +68,6 @@
   },
   "jamforge": {
     "image": "ghcr.io/philoniare/jam-forge:latest",
-    "cmd": "--socket-path {SOCK_PATH}",
     "gp_version": "0.7.2"
   },
   "jamixir": {
@@ -100,13 +99,10 @@
   },
   "jamzilla": {
     "image": "ghcr.io/ascrivener/jamzilla-tiny:edge",
-    "cmd": "-socket {SOCK_PATH}",
-    "env": "PVM_MODE=jit",
     "gp_version": "0.7.2"
   },
   "javajam": {
     "image": "ghcr.io/methodfive/javajam:latest-amd64",
-    "cmd": "-Dskip.warmup=true fuzz {SOCK_PATH}",
     "gp_version": "0.7.2"
   },
   "new-jamneration": {
@@ -131,7 +127,6 @@
   },
   "pyjamaz": {
     "image": "jamdottech/pyjamaz:latest",
-    "cmd": "fuzzer target --db-path=/tmp/pyjamaz_fuzzer_db --socket-path={SOCK_PATH}",
     "gp_version": "0.7.2"
   },
   "spacejam": {
@@ -179,10 +174,7 @@
     "gp_version": "0.7.2"
   },
   "vinwolf": {
-    "repo": "bloppan/conformance_testing",
-    "clone": 1,
-    "file": "linux/tiny/x86_64/vinwolf-target",
-    "cmd": "linux/tiny/x86_64/vinwolf-target --fuzz {SOCK_PATH}",
+    "image": "ghcr.io/bloppan/vinwolf-target:latest",
     "gp_version": "0.7.2"
   }
 }
