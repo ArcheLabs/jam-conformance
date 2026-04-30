@@ -84,17 +84,7 @@
     "gp_version": "0.7.2"
   },
   "jamzig": {
-    "repo": "jamzig/conformance-releases",
-    "clone": 1,
-    "file": {
-      "linux": "tiny/linux/x86_64/jam_conformance_target",
-      "macos": "tiny/macos/aarch64/jam_conformance_target"
-    },
-    "cmd": {
-      "linux": "tiny/linux/x86_64/jam_conformance_target",
-      "macos": "tiny/macos/aarch64/jam_conformance_target"
-    },
-    "args": "--socket={SOCK_PATH}",
+    "image": "docker.io/jamzig/jam-conformance-target:latest",
     "gp_version": "0.7.2"
   },
   "jamzilla": {
