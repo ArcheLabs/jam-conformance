@@ -145,11 +145,7 @@
     "gp_version": "0.7.2"
   },
   "tsjam": {
-    "repo": "vekexasia/tsjam-releases",
-    "file": "tsjam-fuzzer-target.tgz",
-    "cmd": "tsjam-fuzzer-target/jam-fuzzer-target",
-    "args": "--socket {SOCK_PATH}",
-    "env": "JAM_CONSTANTS=tiny NODE_OPTIONS=\"--max-old-space-size=8192\"",
+    "image": "ghcr.io/vekexasia/tsjam-target:0.7.2",
     "gp_version": "0.7.2"
   },
   "turbojam": {
