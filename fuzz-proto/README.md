@@ -341,8 +341,9 @@ python minifuzz/minifuzz.py -d examples/v1/no_forks --target-sock /tmp/jam_targe
 
 ### Docker Image
 
-Targets MUST be distributed as Docker images. Ideally, images should be kept
-lightweight and minimal; avoid inflating already large base images.
+Targets MUST be distributed as Docker images compatible with the `linux/amd64`
+platform. Ideally, images should be kept lightweight and minimal; avoid
+inflating already large base images.
 
 ### Entry Point
 
