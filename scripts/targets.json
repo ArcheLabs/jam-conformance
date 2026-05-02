@@ -134,12 +134,7 @@
     "gp_version": "0.7.2"
   },
   "tessera": {
-    "repo": "Chainscore/tessera-releases",
-    "file": {
-      "linux": "tessera-node-Linux-x64.tar.gz",
-      "macos": "tessera-node-Darwin-arm64.tar.gz"
-    },
-    "cmd": "tessera-node --fuzzer --socket {SOCK_PATH}",
+    "image": "ghcr.io/chainscore/tessera:latest",
     "gp_version": "0.7.2"
   },
   "tsjam": {
