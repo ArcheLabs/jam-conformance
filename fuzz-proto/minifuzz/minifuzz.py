@@ -92,7 +92,7 @@ def main():
                        help='Specification to use (default: tiny)')
     parser.add_argument('-v', '--verbose', action='store_true',
                        help='Verbose output (default: false)')
-    parser.add_argument('--target-sock', default='/tmp/jam_target.sock',
+    parser.add_argument('--target-sock', default='/tmp/jam_fuzz/fuzz.sock',
                        help='Target socket path (default: /tmp/jam_target.sock)')
     parser.add_argument('--stop-after', type=int, default=1000,
                        help='Stop after processing this many file pairs (default: 1000)')

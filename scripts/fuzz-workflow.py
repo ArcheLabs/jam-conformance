@@ -16,12 +16,21 @@
 #   in an exploratory session to generate new traces.
 # - trace mode, which runs a group of existing traces against several targets,
 #   and is meant to regenerate reports for existing traces.
+#
+# Data organization:
+# - SESSION_DATA_PATH: /tmp/jam_fuzz/{SESSION_ID} (ephemeral, cleaned up after each run)
+#   Contains socket and target runtime data passed to target.py via JAM_FUZZ_DATA_PATH
+# - SESSION_DIR: sessions/{SESSION_ID} (persistent)
+#   Contains traces, reports, logs from the fuzzing session
+# - SESSION_TARGET_SOCK: SESSION_DATA_PATH/fuzz.sock
+#   Unix domain socket for fuzzer-target communication
 
 import json
 import os
 import random
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -50,6 +59,7 @@ SESSIONS_DIR = os.environ.get("JAM_FUZZ_SESSIONS_DIR", f"{CURRENT_DIR}/sessions"
 
 # Fuzzing session id, defaults to unix timestamp
 SESSION_ID = os.environ.get("JAM_FUZZ_SESSION_ID", str(int(time.time())))
+
 # Session dir
 SESSION_DIR = os.path.join(SESSIONS_DIR, SESSION_ID)
 # The directory where we store the traces for one fuzzer session
@@ -61,8 +71,10 @@ SESSION_LOGS_DIR = os.path.join(SESSION_DIR, "logs")
 # The directory where failed traces are stored
 SESSION_FAILED_TRACES_DIR = os.path.join(SESSION_DIR, "failed_traces_reports")
 
+# Per-session ephemeral fuzz data directory (socket, target data, etc.)
+SESSION_DATA_PATH = os.path.join("/tmp/jam_fuzz", SESSION_ID)
 # Target unix domain socket
-SESSION_TARGET_SOCK = os.environ.get("JAM_FUZZ_TARGET_SOCK", f"/tmp/jam_fuzz_{SESSION_ID}.sock")
+SESSION_TARGET_SOCK = os.path.join(SESSION_DATA_PATH, "fuzz.sock")
 
 # Global environment variables that affect the fuzzer.
 SEED = os.environ.get("JAM_FUZZ_SEED", "42")
@@ -101,13 +113,13 @@ def parse_command_line_args():
         "-p", "--profile", type=str, default="full", help="Fuzzing profile to use"
     )
     parser.add_argument(
-        "--fuzzy-profile", type=str, default="rand", help="Fuzzy service profile to use"
+        "--fuzzy-profile", type=str, default="full", help="Fuzzy service profile to use"
     )
     parser.add_argument(
         "-m",
         "--max-mutations",
         type=int,
-        default=0,
+        default=5,
         help="Maximum number of mutations to apply",
     )
     parser.add_argument(
@@ -380,6 +392,8 @@ def run_fuzzer_trace_mode(target, trace_dir, log_file):
         input_trace_dir,
         "--target-sock",
         SESSION_TARGET_SOCK,
+        "--max-mutations",
+        "0",
         "--verbosity",
         VERBOSITY,
         "--pvm-interpreter-backend",
@@ -419,19 +433,29 @@ def run_fuzzer_trace_mode(target, trace_dir, log_file):
 
 
 def wait_for_target_sock(target_process):
-    # Detect if we terminated with an error and exit immediately if so
-    # Wait up to 10 seconds for TARGET_SOCK to be created
+    # Wait for the target to be actually accepting connections on the socket.
+    # Just checking file existence is not enough: the socket file may appear
+    # before the target has called listen(), causing connection failures
+    # especially under parallel startup load.
     socket_wait_timeout = 20
     socket_wait_start = time.time()
-    while not os.path.exists(SESSION_TARGET_SOCK):
+    while True:
         if target_process.poll() is not None:
             print("Error: Target process terminated before creating socket.")
             exit(1)
         if time.time() - socket_wait_start > socket_wait_timeout:
             print(
-                f"Error: Target socket {SESSION_TARGET_SOCK} was not created within {socket_wait_timeout} seconds."
+                f"Error: Target socket {SESSION_TARGET_SOCK} was not ready within {socket_wait_timeout} seconds."
             )
             exit(1)
+        if os.path.exists(SESSION_TARGET_SOCK):
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.connect(SESSION_TARGET_SOCK)
+                sock.close()
+                break
+            except (ConnectionRefusedError, OSError):
+                pass
         time.sleep(0.1)
 
 
@@ -439,9 +463,13 @@ def run_target(target, log_file):
     """Run the target"""
     print(f"* Running target: {target}")
 
-    if os.path.exists(SESSION_TARGET_SOCK):
-        os.remove(SESSION_TARGET_SOCK)
-        print(f"Removed existing socket: {SESSION_TARGET_SOCK}")
+    # Clean up ephemeral data directory from previous runs (target.py will also do this)
+    # This ensures a fresh state even if target.py subprocess fails to clean up
+    try:
+        shutil.rmtree(SESSION_DATA_PATH)
+        print(f"Cleaned up ephemeral data directory: {SESSION_DATA_PATH}")
+    except FileNotFoundError:
+        pass
 
     target_command = [
         os.path.join(JAM_CONFORMANCE_DIR, "scripts/target.py"),
@@ -459,7 +487,7 @@ def run_target(target, log_file):
         # Set up environment variables for the subprocess
         env = os.environ.copy()
         env["JAM_FUZZ_TARGETS_DIR"] = TARGETS_DIR
-        env["JAM_FUZZ_TARGET_SOCK"] = SESSION_TARGET_SOCK
+        env["JAM_FUZZ_DATA_PATH"] = SESSION_DATA_PATH
         target_process = subprocess.Popen(
             target_command,
             stdin=subprocess.DEVNULL,

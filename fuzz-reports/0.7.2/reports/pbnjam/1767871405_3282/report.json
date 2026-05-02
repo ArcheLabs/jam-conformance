@@ -9,27 +9,27 @@
         "fuzzy_profile": {
             "full": null
         },
-        "max_work_items": 3,
-        "mutation_ratio": 0.0,
+        "max_work_items": 5,
+        "mutation_ratio": 0.1,
         "max_mutations": 0
     },
     "stats": {
         "steps": 4,
         "imported": 1,
         "import_max_step": 4,
-        "import_min": 21.045381,
-        "import_max": 21.045381,
-        "import_mean": 21.045381,
-        "import_p50": 21.045381,
+        "import_min": 18.219058,
+        "import_max": 18.219058,
+        "import_mean": 18.219058,
+        "import_p50": 18.219058,
         "import_p75": 0.0,
-        "import_p90": 21.045381,
+        "import_p90": 18.219058,
         "import_p99": 0.0,
         "import_std_dev": 0.0
     },
     "target": {
         "info": {
             "fuzz_version": 1,
-            "fuzz_features": 0,
+            "fuzz_features": 2,
             "jam_version": {
                 "major": 0,
                 "minor": 7,
@@ -46,12 +46,12 @@
             "steps": 4,
             "imported": 1,
             "import_max_step": 4,
-            "import_min": 4385.434955,
-            "import_max": 4385.434955,
-            "import_mean": 4385.434955,
-            "import_p50": 4385.434955,
+            "import_min": 4530.404565999999,
+            "import_max": 4530.404565999999,
+            "import_mean": 4530.404565999999,
+            "import_p50": 4530.404565999999,
             "import_p75": 0.0,
-            "import_p90": 4385.434955,
+            "import_p90": 4530.404565999999,
             "import_p99": 0.0,
             "import_std_dev": 0.0
         }
