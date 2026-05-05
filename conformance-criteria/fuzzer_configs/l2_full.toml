@@ -1,0 +1,29 @@
+# L2 -- Mutations (full spec)
+#
+# 1M steps, workload, mutations, no Safrole.
+
+jam_spec = "full"
+profile = "full"
+fuzzy_profile = "full"
+safrole = false
+max_steps = 1000000
+max_work_items = 5
+max_mutations = 5
+mutation_ratio = 0.1
+# Use u32::max to enable target pause/resume
+remote_timeout = 4294967295
+
+# Shared
+source = "local"
+# Overwrite via `--target-sock` CLI option if required
+target_sock = "/tmp/jam_fuzz/fuzz.sock"
+step_period = 0
+verbosity = 2
+trace_dir = "traces"
+log_file = "fuzz.log"
+skip_slots = false
+single_step = false
+show_config = false
+pause_on_error = false
+trace_traces = false
+pvm_interpreter_backend = true
