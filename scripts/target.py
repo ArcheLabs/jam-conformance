@@ -645,10 +645,25 @@ def handle_list_action(all_targets: Dict[str, Target], gp_version: Optional[str]
 
 def handle_clean_action(target: Target) -> bool:
     """Handle the clean action for a target."""
+    cleaned = False
+
     target_dir = Path(f"{CONFIG.targets_dir}/{target.name}")
     if target_dir.exists():
-        print(f"Cleaning target {target.name}...")
+        print(f"Cleaning target dir {target_dir}...")
         shutil.rmtree(target_dir)
+        cleaned = True
+
+    if target.is_docker_target():
+        result = subprocess.run(
+            ["docker", "image", "inspect", target.image],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            print(f"Removing Docker image {target.image}...")
+            subprocess.run(["docker", "rmi", "-f", target.image], check=False)
+            cleaned = True
+
+    if cleaned:
         print(f"Target {target.name} cleaned successfully!")
     else:
         print(f"Target {target.name} not found or already clean.")
