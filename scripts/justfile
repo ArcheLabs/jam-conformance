@@ -1,13 +1,13 @@
-# Some common recipes
+# Some common recipes for fuzz-workflow script
 
 # Download a target
 download target="all":
-    ./fuzz-workflow.py -t "{{target}}" --skip-run --skip-report --parallel
+    ./fuzz-workflow.py --targets "{{target}}" --skip-run --skip-report --parallel
 
 # Execute an exploratory workflow with a few targets and random seed
-explore target="all":
-    ./fuzz-workflow.py -t "{{target}}" --skip-get --report-publish --parallel --source local --rand-seed --max-mutations 5 --mutation-ratio 0.1
+explore target="all" spec="tiny":
+    ./fuzz-workflow.py --targets "{{target}}" --spec "{{spec}}" --skip-get --report-publish --parallel --source local --rand-seed --max-mutations 5 --mutation-ratio 0.1
 
 # Execute a trace workflow with a few targets and publish the corresponding reports
-replay target="all":
-    ./fuzz-workflow.py -t "{{target}}" --skip-get --report-publish --parallel --source trace --max-mutations 0 --mutation-ratio 0
+replay target="all" spec="tiny":
+    ./fuzz-workflow.py --targets "{{target}}" --spec "{{spec}}" --skip-get --report-publish --parallel --source trace --max-mutations 0 --mutation-ratio 0

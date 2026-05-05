@@ -361,6 +361,8 @@ def run_fuzzer_local_mode(args, log_file):
         VERBOSITY,
         "--remote-timeout",
         REMOTE_TIMEOUT,
+        "--jam-spec",
+        args.spec,
         "--pvm-interpreter-backend",
     ]
 
@@ -372,7 +374,7 @@ def run_fuzzer_local_mode(args, log_file):
     print(f"Check {log_file} for detailed output.")
 
 
-def run_fuzzer_trace_mode(target, trace_dir, log_file):
+def run_fuzzer_trace_mode(args, target, trace_dir, log_file):
     """
     Run `cargo polkajam-fuzz` with 'trace' source.
     """
@@ -396,6 +398,8 @@ def run_fuzzer_trace_mode(target, trace_dir, log_file):
         "0",
         "--verbosity",
         VERBOSITY,
+        "--jam-spec",
+        args.spec,
         "--pvm-interpreter-backend",
         "--trace-traces",
     ]
@@ -863,7 +867,7 @@ def run_trace_for_target(target, trace_dirs, source_traces_dir, args):
         else:
             try:
                 [trace_result, report_missing] = run_fuzzer_trace_mode(
-                    target, full_trace_dir, fuzzer_log_file
+                    args, target, full_trace_dir, fuzzer_log_file
                 )
                 if report_missing:
                     target_results.append(f"💀 {trace}")
@@ -1070,6 +1074,7 @@ def main():
 
     print(f"Setting JAM spec: {args.spec}")
     spec.set_spec(args.spec)
+    os.environ["JAM_FUZZ_SPEC"] = args.spec
 
     mode = args.source
 
