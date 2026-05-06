@@ -8,96 +8,76 @@ import shutil
 import json
 import urllib.request
 import signal
-import time
 import argparse
 import random
+import shlex
 import string
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import ClassVar, Dict, List, Optional
 from dataclasses import dataclass
 import ssl
+import platform
+
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# HOST-side data directory for all fuzz-related temporary files.
-# When running in Docker, this directory is mounted to CONTAINER_DATA_PATH inside the container.
-# Can be overridden via JAM_FUZZ_DATA_PATH environment variable (set by fuzz-workflow.py per session).
-HOST_DATA_PATH = os.environ.get("JAM_FUZZ_DATA_PATH", "/tmp/jam_fuzz")
 
-# HOST-side path to the Unix domain socket used for fuzzer-target communication.
-# Always derived from HOST_DATA_PATH; socket file is created inside the mounted data directory.
-HOST_SOCK_PATH = os.path.join(HOST_DATA_PATH, "fuzz.sock")
+@dataclass
+class Config:
+    """Constants and runtime configuration for the script.
 
-# Used to run binaries when target is not provided as a docker image
-DEFAULT_DOCKER_IMAGE = "debian:stable-slim"
+    Instance fields are populated by `Config.from_args(args)` with precedence:
+    CLI flag > env var > default. ClassVar fields are true constants.
+    """
 
-# Maximum number of cores to use for docker containers
-_default_cpu_set = f"0-{os.cpu_count() - 1}" if os.cpu_count() and os.cpu_count() > 1 else "0"
-DOCKER_CPU_SET = os.environ.get("JAM_FUZZ_DOCKER_CPU_SET", _default_cpu_set)
+    # CLI/env-driven values
+    host_data_path: str       # JAM_FUZZ_DATA_PATH
+    docker_cpu_set: str       # JAM_FUZZ_DOCKER_CPU_SET
+    targets_dir: str          # JAM_FUZZ_TARGETS_DIR
+    targets_file: str         # JAM_FUZZ_TARGETS_FILE, --targets-file
+    spec: str                 # JAM_FUZZ_SPEC, --spec
+    log_level: str            # JAM_FUZZ_LOG_LEVEL
 
-# Whether to run targets in docker containers (1) or directly on host (0)
-RUN_DOCKER = int(os.environ.get("JAM_FUZZ_RUN_DOCKER", "1"))
+    # True constants
+    DEFAULT_DOCKER_IMAGE: ClassVar[str] = "debian:stable-slim"
+    DOCKER_PLATFORM: ClassVar[str] = "linux/amd64"
+    # Standard JAM fuzz packaging paths inside the container (see fuzz-proto/README.md).
+    CONTAINER_DATA_PATH: ClassVar[str] = "/tmp/jam_fuzz"
+    CONTAINER_SOCK_PATH: ClassVar[str] = "/tmp/jam_fuzz/fuzz.sock"
+    CURRENT_DIR: ClassVar[str] = os.getcwd()
+    SCRIPT_DIR: ClassVar[str] = os.path.dirname(os.path.abspath(__file__))
 
-# Forces a platform for docker commands (run, pull, etc)
-DOCKER_PLATFORM = "linux/amd64"
+    @classmethod
+    def from_args(cls, args) -> "Config":
+        cpu_default = f"0-{os.cpu_count() - 1}"
 
-# Set directory variables
-CURRENT_DIR = os.getcwd()
-TARGETS_DIR = os.environ.get("JAM_FUZZ_TARGETS_DIR", f"{CURRENT_DIR}/targets")
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TARGETS_FILE = os.environ.get("JAM_FUZZ_TARGETS_FILE", f"{SCRIPT_DIR}/targets.json")
+        spec = os.environ.get("JAM_FUZZ_SPEC", "tiny")
+        if args.action == "run" and args.spec:
+            spec = args.spec
 
-# Standard JAM fuzz packaging paths (see fuzz-proto/README.md).
-CONTAINER_DATA_PATH = "/tmp/jam_fuzz"
-CONTAINER_SOCK_PATH = f"{CONTAINER_DATA_PATH}/fuzz.sock"
+        return cls(
+            host_data_path=os.environ.get("JAM_FUZZ_DATA_PATH", "/tmp/jam_fuzz"),
+            docker_cpu_set=os.environ.get("JAM_FUZZ_DOCKER_CPU_SET", cpu_default),
+            targets_dir=os.environ.get("JAM_FUZZ_TARGETS_DIR", f"{cls.CURRENT_DIR}/targets"),
+            targets_file=args.targets_file or os.environ.get(
+                "JAM_FUZZ_TARGETS_FILE", f"{cls.SCRIPT_DIR}/targets.json"
+            ),
+            spec=spec,
+            log_level=os.environ.get("JAM_FUZZ_LOG_LEVEL", "info"),
+        )
+
+
+CONFIG: Optional[Config] = None
 
 @dataclass
 class Target:
     name: str
     repo: Optional[str] = None
-    clone: Optional[int] = None
     image: Optional[str] = None
-    file: Optional[Union[str, Dict[str, str]]] = None
-    cmd: Optional[Union[str, Dict[str, str]]] = None
+    file: Optional[str] = None
+    cmd: Optional[str] = None
     args: Optional[str] = None
     env: Optional[str] = None
-    post: Optional[str] = None
     gp_version: Optional[str] = None
-
-    def get_image_with_tag(self) -> Optional[str]:
-        """Get the full image reference with tag. Defaults to 'latest' if no tag is present."""
-        if not self.image:
-            return None
-        if ':' in self.image:
-            return self.image
-        return f"{self.image}:latest"
-
-    def get_file(self, os_name: str) -> Optional[str]:
-        """Get the file for the given OS."""
-        if not self.file:
-            return None
-        if isinstance(self.file, str):
-            return self.file
-        return self.file.get(os_name)
-
-    def get_cmd(self, os_name: str) -> Optional[str]:
-        """Get the command for the given OS."""
-        if not self.cmd:
-            return None
-        if isinstance(self.cmd, str):
-            return self.cmd
-        return self.cmd.get(os_name)
-
-    def get_args(self) -> Optional[str]:
-        """Get the arguments."""
-        return self.args
-
-    def supports_os(self, os_name: str) -> bool:
-        """Check if target supports the given OS."""
-        if not self.file:
-            return True
-        if isinstance(self.file, str):
-            return True
-        return os_name in self.file
 
     def is_docker_target(self) -> bool:
         """Check if this is a Docker target."""
@@ -111,103 +91,42 @@ class Target:
 def load_targets() -> Dict[str, Target]:
     """Load target configuration from JSON file and convert to Target instances."""
     try:
-        with open(TARGETS_FILE, "r") as f:
-            targets_data = json.load(f)
+        with open(CONFIG.targets_file, "r") as f:
+            text = f.read().replace("{SOCK_PATH}", CONFIG.CONTAINER_SOCK_PATH)
     except FileNotFoundError:
-        print(f"Error: targets.json not found at {TARGETS_FILE}")
+        print(f"Error: targets.json not found at {CONFIG.targets_file}")
         sys.exit(1)
+
+    try:
+        targets_data = json.loads(text)
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in targets.json: {e}")
         sys.exit(1)
 
-    targets = {}
-
-    for target_name, target_config in targets_data.items():
-        # Process string values to replace {SOCK_PATH} placeholder
-        processed_config = {}
-        for key, value in target_config.items():
-            if isinstance(value, str) and "{SOCK_PATH}" in value:
-                processed_config[key] = value.format(SOCK_PATH=CONTAINER_SOCK_PATH)
-            elif isinstance(value, dict):
-                # Handle nested dictionaries (file.linux, cmd.macos, etc.)
-                processed_dict = {}
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str) and "{SOCK_PATH}" in sub_value:
-                        processed_dict[sub_key] = sub_value.format(
-                            SOCK_PATH=CONTAINER_SOCK_PATH
-                        )
-                    elif isinstance(sub_value, list):
-                        # Handle lists in nested dictionaries
-                        processed_list = []
-                        for item in sub_value:
-                            if isinstance(item, str) and "{SOCK_PATH}" in item:
-                                processed_list.append(
-                                    item.format(SOCK_PATH=CONTAINER_SOCK_PATH)
-                                )
-                            else:
-                                processed_list.append(item)
-                        processed_dict[sub_key] = processed_list
-                    else:
-                        processed_dict[sub_key] = sub_value
-                processed_config[key] = processed_dict
-            elif isinstance(value, list):
-                # Handle lists (args, cmd as list)
-                processed_list = []
-                for item in value:
-                    if isinstance(item, str) and "{SOCK_PATH}" in item:
-                        processed_list.append(item.format(SOCK_PATH=CONTAINER_SOCK_PATH))
-                    else:
-                        processed_list.append(item)
-                processed_config[key] = processed_list
-            elif isinstance(value, str) and "{SOCK_PATH}" in value:
-                processed_config[key] = value.format(SOCK_PATH=CONTAINER_SOCK_PATH)
-            else:
-                processed_config[key] = value
-
-        targets[target_name] = Target(name=target_name, **processed_config)
-
-    return targets
-
-
-# Load target configuration from JSON file
-TARGETS = load_targets()
-
-
-def get_target(target: str) -> Optional[Target]:
-    if target in TARGETS:
-        return TARGETS[target]
-    else:
-        print(f"Error: Target {target} not found")
-        return None
+    return {name: Target(name=name, **cfg) for name, cfg in targets_data.items()}
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
-    available_targets = get_available_targets()
-
     parser = argparse.ArgumentParser(
         description="JAM conformance target manager - download and run JAM implementation targets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s get all                    # Download all targets
+  %(prog)s list                       # List all available targets
   %(prog)s get jamzig                 # Download jamzig target
   %(prog)s run boka                   # Run boka target
-  %(prog)s --os macos get jamzig      # Download jamzig for macOS
-  %(prog)s run --no-docker spacejam   # Run spacejam directly on host
-  %(prog)s info all                   # Show info for all targets
+  %(prog)s info boka                  # Show info for boka target
 
-Environment variables:
+Environment variables (all overridable via CLI flags listed above):
+  JAM_FUZZ_TARGETS_FILE    Path to targets JSON file (default: <script>/targets.json)
+  JAM_FUZZ_TARGETS_DIR     Where downloaded targets are stored (default: ./targets)
   JAM_FUZZ_DATA_PATH       Host data directory (default: /tmp/jam_fuzz)
-  JAM_FUZZ_RUN_DOCKER      Run in Docker (1) or host (0) (default: 1)
-  JAM_FUZZ_DOCKER_CPU_SET  CPU set for Docker containers (default: 16-32)
-
-Use 'info all' to see available targets.
+  JAM_FUZZ_DOCKER_CPU_SET  CPU set for Docker containers (default: all cores)
+  JAM_FUZZ_SPEC            Specification: tiny or full (default: tiny)
+  JAM_FUZZ_LOG_LEVEL       Log level forwarded to the target (default: info)
+  GITHUB_TOKEN             Optional bearer token for GitHub release lookups
         """,
-    )
-
-    parser.add_argument(
-        "--os", choices=["linux", "macos"], help="Target OS (default: auto-detected)"
     )
 
     parser.add_argument(
@@ -217,36 +136,31 @@ Use 'info all' to see available targets.
         help="Specification to use (tiny or full, overrides JAM_FUZZ_SPEC env var)"
     )
 
+    parser.add_argument(
+        "--targets-file",
+        type=str,
+        default=None,
+        help="Path to targets JSON file (overrides JAM_FUZZ_TARGETS_FILE env var)",
+    )
+
     subparsers = parser.add_subparsers(
         dest="action", help="Action to perform", required=True
     )
 
     # Get subcommand
-    get_parser = subparsers.add_parser("get", help="Download target(s)")
+    get_parser = subparsers.add_parser("get", help="Download target")
     get_parser.add_argument(
         "target",
-        choices=available_targets + ["all"],
         metavar="TARGET",
-        help='Target to download (or "all" for all targets)',
+        help="Target to download",
     )
 
     # Run subcommand
     run_parser = subparsers.add_parser("run", help="Run target")
     run_parser.add_argument(
-        "target", choices=available_targets, metavar="TARGET", help="Target to run"
+        "target", metavar="TARGET", help="Target to run"
     )
 
-    docker_group = run_parser.add_mutually_exclusive_group()
-    docker_group.add_argument(
-        "--docker",
-        action="store_true",
-        help="Force Docker usage (overrides JAM_FUZZ_RUN_DOCKER env var)",
-    )
-    docker_group.add_argument(
-        "--no-docker",
-        action="store_true",
-        help="Force host usage (overrides JAM_FUZZ_RUN_DOCKER env var)",
-    )
     run_parser.add_argument(
         "--target-args",
         type=str,
@@ -276,18 +190,16 @@ Use 'info all' to see available targets.
     info_parser = subparsers.add_parser("info", help="Show target information")
     info_parser.add_argument(
         "target",
-        choices=available_targets + ["all"],
         metavar="TARGET",
-        help='Target to show info for (or "all" for all targets)',
+        help="Target to show info for",
     )
 
     # Clean subcommand
     clean_parser = subparsers.add_parser("clean", help="Clean target files")
     clean_parser.add_argument(
         "target",
-        choices=available_targets + ["all"],
         metavar="TARGET",
-        help='Target to clean (or "all" for all targets)',
+        help="Target to clean",
     )
 
     # List subcommand
@@ -301,163 +213,61 @@ Use 'info all' to see available targets.
     return parser
 
 
-def get_os() -> Optional[str]:
-    import platform
-
-    system = platform.system()
-    if system == "Linux":
-        return "linux"
-    elif system == "Darwin":
-        return "macos"
-    else:
-        return None
+def _clean_host_data() -> None:
+    try:
+        shutil.rmtree(CONFIG.host_data_path)
+    except FileNotFoundError:
+        pass
 
 
-def is_docker_target(target: str) -> bool:
-    return target in TARGETS and TARGETS[target].is_docker_target()
+# Trailing suffixes -> extractor command. Multi-suffix entries must come first
+# so e.g. .tar.gz isn't peeled as just .tar.
+ARCHIVE_EXTRACTORS = [
+    ((".tar", ".gz"),  ["tar", "-xzf"]),
+    ((".tar", ".bz2"), ["tar", "-xjf"]),
+    ((".tar", ".xz"),  ["tar", "-xJf"]),
+    ((".zip",),        ["unzip"]),
+    ((".tgz",),        ["tar", "-xzf"]),
+    ((".tbz2",),       ["tar", "-xjf"]),
+    ((".txz",),        ["tar", "-xJf"]),
+    ((".tar",),        ["tar", "-xf"]),
+]
 
 
-def is_repo_target(target: str) -> bool:
-    return target in TARGETS and TARGETS[target].is_repo_target()
-
-
-def get_available_targets() -> List[str]:
-    return sorted(list(TARGETS.keys()))
-
-
-def target_supports_os(name: str, os_name: str) -> bool:
-    target = get_target(name)
-    if target is None:
-        return False
-    if not target.supports_os(os_name):
-        print(f"Error: No {os_name} version available for {name}", file=sys.stderr)
-        return False
-    return True
-
-
-def get_target_file(name: str, os_name: str) -> Optional[str]:
-    target = get_target(name)
-    if target is None:
-        return None
-    return target.get_file(os_name)
-
-
-def post_actions(target_name: str, os_name: str) -> bool:
-    target = get_target(target_name)
-    if not target:
-        return False
-    file = target.get_file(os_name)
-    if not file:
+def post_actions(target: Target) -> bool:
+    if not target.file:
         return False
 
-    print(f"Performing post actions for {file}")
-    target_dir = Path(f"{TARGETS_DIR}/{target_name}/latest")
-    os.chdir(target_dir)
+    print(f"Performing post actions for {target.file}")
+    target_dir = Path(f"{CONFIG.targets_dir}/{target.name}/latest")
 
-    if target.post:
-        subprocess.run(target.post, shell=True, check=True)
-    else:
-        # Extract nested archives by peeling off extensions
-        current_file = Path(file)
-        while current_file.exists():
-            if current_file.suffix == ".zip":
-                print(f"Extracting zip archive: {current_file}")
-                subprocess.run(["unzip", str(current_file)], check=True)
+    # Extract nested archives by peeling off extensions
+    current_file = target_dir / target.file
+    while current_file.exists():
+        for suffixes, cmd in ARCHIVE_EXTRACTORS:
+            if tuple(current_file.suffixes[-len(suffixes):]) == suffixes:
+                ext = "".join(suffixes).lstrip(".")
+                print(f"Extracting {ext} archive: {current_file}")
+                subprocess.run(cmd + [str(current_file)], check=True, cwd=target_dir)
                 current_file.unlink()
-                current_file = current_file.with_suffix("")
-            elif current_file.suffixes[-2:] == [".tar", ".gz"]:
-                print(f"Extracting tar.gz archive: {current_file}")
-                subprocess.run(["tar", "-xzf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("").with_suffix("")
-            elif current_file.suffix == ".tgz":
-                print(f"Extracting tgz archive: {current_file}")
-                subprocess.run(["tar", "-xzf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("")
-            elif current_file.suffixes[-2:] == [".tar", ".bz2"]:
-                print(f"Extracting tar.bz2 archive: {current_file}")
-                subprocess.run(["tar", "-xjf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("").with_suffix("")
-            elif current_file.suffix == ".tbz2":
-                print(f"Extracting tbz2 archive: {current_file}")
-                subprocess.run(["tar", "-xjf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("")
-            elif current_file.suffixes[-2:] == [".tar", ".xz"]:
-                print(f"Extracting tar.xz archive: {current_file}")
-                subprocess.run(["tar", "-xJf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("").with_suffix("")
-            elif current_file.suffix == ".txz":
-                print(f"Extracting txz archive: {current_file}")
-                subprocess.run(["tar", "-xJf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("")
-            elif current_file.suffix == ".tar":
-                print(f"Extracting tar archive: {current_file}")
-                subprocess.run(["tar", "-xf", str(current_file)], check=True)
-                current_file.unlink()
-                current_file = current_file.with_suffix("")
-            else:
-                # Not an archive, make it executable and stop
-                print(f"Making file executable: {current_file}")
-                current_file.chmod(0o755)
+                for _ in suffixes:
+                    current_file = current_file.with_suffix("")
                 break
-
-    os.chdir(CURRENT_DIR)
-    return True
-
-
-def clone_github_repo(target: str, os_name: str, repo: str) -> bool:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        subprocess.run(
-            ["git", "clone", f"https://github.com/{repo}", "--depth", "1", temp_dir],
-            check=True,
-        )
-
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=temp_dir,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_hash = result.stdout.strip()
-        print(f"Cloning last revision: {commit_hash}")
-
-        target_dir = Path(f"{TARGETS_DIR}/{target}")
-        print(f"Cloned to {target_dir}")
-
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_dir_rev = target_dir / commit_hash
-
-        shutil.move(temp_dir, target_dir_rev)
-
-        latest_link = target_dir / "latest"
-        if latest_link.exists() or latest_link.is_symlink():
-            latest_link.unlink()
-        latest_link.symlink_to(target_dir_rev.resolve())
-
-        post_actions(target, os_name)
+        else:
+            # No archive matched: treat as the final binary
+            print(f"Making file executable: {current_file}")
+            current_file.chmod(0o755)
+            break
 
     return True
 
 
-def get_docker_image(target: str) -> bool:
-    if target not in TARGETS:
-        print(f"Error: Target {target} not found")
+def get_docker_image(target: Target) -> bool:
+    if not target.image:
+        print(f"Error: No Docker image specified for {target.name}")
         return False
 
-    target_obj = TARGETS[target]
-    docker_image = target_obj.get_image_with_tag()
-
-    if not docker_image:
-        print(f"Error: No Docker image specified for {target}")
-        return False
-
-    print(f"Pulling Docker image: {docker_image}")
+    print(f"Pulling Docker image: {target.image}")
 
     if not shutil.which("docker"):
         print("Error: Docker is not installed or not in PATH")
@@ -471,37 +281,23 @@ def get_docker_image(target: str) -> bool:
         return False
 
     try:
-        subprocess.run(["docker", "pull", "--platform", DOCKER_PLATFORM, docker_image], check=True)
-        print(f"Successfully pulled Docker image: {docker_image}")
+        subprocess.run(["docker", "pull", "--platform", CONFIG.DOCKER_PLATFORM, target.image], check=True)
+        print(f"Successfully pulled Docker image: {target.image}")
         return True
     except subprocess.CalledProcessError:
-        print(f"Error: Failed to pull Docker image {docker_image}")
+        print(f"Error: Failed to pull Docker image {target.image}")
         return False
 
 
-def get_github_release(target: str, os_name: str) -> bool:
-    if target not in TARGETS:
-        print(f"Error: Target {target} not found")
+def get_github_release(target: Target) -> bool:
+    if not target.repo:
+        print(f"Error: missing repository information for {target.name}")
         return False
-
-    target_obj = TARGETS[target]
-    repo = target_obj.repo
-    file = get_target_file(target, os_name)
-
-    if not repo:
-        print(f"Error: missing repository information for {target}")
-        return False
-
-    if target_obj.clone == 1:
-        print(
-            f"Info: No release file specified for {target} on {os_name}, cloning repository instead"
-        )
-        return clone_github_repo(target, os_name, repo)
 
     # Get the latest release tag from GitHub API
     print("Fetching latest release information...")
     try:
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        url = f"https://api.github.com/repos/{target.repo}/releases/latest"
         req = urllib.request.Request(url)
         github_token = os.environ.get("GITHUB_TOKEN")
         if github_token:
@@ -516,13 +312,13 @@ def get_github_release(target: str, os_name: str) -> bool:
     print(f"Latest version: {latest_tag}")
 
     # Construct download URL
-    download_url = f"https://github.com/{repo}/releases/download/{latest_tag}/{file}"
+    download_url = f"https://github.com/{target.repo}/releases/download/{latest_tag}/{target.file}"
     print(f"Downloading from: {download_url}")
 
     # Download to a temporary file to avoid race conditions when
     # multiple targets share the same filename (e.g., jamzilla and jamzilla-int)
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file}") as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{target.file}") as tmp:
             tmp_path = tmp.name
         urllib.request.urlretrieve(download_url, tmp_path)
     except Exception as e:
@@ -530,11 +326,11 @@ def get_github_release(target: str, os_name: str) -> bool:
         return False
 
     print(f"Downloaded target to: {tmp_path}")
-    target_dir = Path(f"{TARGETS_DIR}/{target}")
+    target_dir = Path(f"{CONFIG.targets_dir}/{target.name}")
     target_dir_rev = target_dir / latest_tag
 
     target_dir_rev.mkdir(parents=True, exist_ok=True)
-    shutil.move(tmp_path, target_dir_rev / file)
+    shutil.move(tmp_path, target_dir_rev / target.file)
     print(f"* Target downloaded to: {target_dir_rev}")
 
 
@@ -543,7 +339,7 @@ def get_github_release(target: str, os_name: str) -> bool:
         latest_link.unlink()
     latest_link.symlink_to(target_dir_rev.resolve())
 
-    return post_actions(target, os_name)
+    return post_actions(target)
 
 
 def print_docker_image_info(image):
@@ -577,73 +373,52 @@ def is_rootless_docker() -> bool:
         return False
 
 
-def run_docker_image(target: str, args=None) -> None:
-    if target not in TARGETS:
-        print(f"Error: Target {target} not found")
-        return
-
-    target_obj = TARGETS[target]
-    image = target_obj.get_image_with_tag()
-    cmd = target_obj.cmd
-    env = target_obj.env
-
+def run_docker_image(target: Target, args) -> None:
     # Use custom container name if provided, otherwise generate unique name with random suffix
-    if args and hasattr(args, 'container_name') and args.container_name:
+    if args.container_name:
         container_name = args.container_name
     else:
         # Generate unique container name with random suffix to allow parallel instances
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        container_name = f"{target}-{random_suffix}"
+        container_name = f"{target.name}-{random_suffix}"
 
-    print(f"Running '{target}' on docker image")
-    print(f"Command: '{cmd}'")
+    print(f"Running '{target.name}' on docker image")
+    print(f"Command: '{target.cmd}'")
     print(f"Container: '{container_name}'")
 
     try:
-        print_docker_image_info(image)
+        print_docker_image_info(target.image)
     except (subprocess.CalledProcessError, IndexError, ValueError):
-        print(f"Error: Docker image '{image}' not found locally.")
-        print(f"Please run: {sys.argv[0]} get {target}")
+        print(f"Error: Docker image '{target.image}' not found locally.")
+        print(f"Please run: {sys.argv[0]} get {target.name}")
         sys.exit(1)
 
     # Clean start: remove any leftover data directory from previous runs
     # This ensures the socket and other runtime files are fresh
-    try:
-        shutil.rmtree(HOST_DATA_PATH)
-    except FileNotFoundError:
-        pass
+    _clean_host_data()
 
     # Create host data directory
-    os.makedirs(HOST_DATA_PATH, exist_ok=True)
+    os.makedirs(CONFIG.host_data_path, exist_ok=True)
     # Ensure the directory is world-writable so the container user can create files
     # (needed for rootless Docker where the mapped user may differ from the host user)
-    os.chmod(HOST_DATA_PATH, 0o777)
-    print(f"Host data path: {HOST_DATA_PATH}")
+    os.chmod(CONFIG.host_data_path, 0o777)
+    print(f"Host data path: {CONFIG.host_data_path}")
 
-    def cleanup_docker():
+    def cleanup():
         print(f"Cleaning up Docker container {container_name}...")
         subprocess.run(["docker", "kill", container_name], capture_output=True)
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
-        # Remove ephemeral data directory and socket files created during this run
-        try:
-            shutil.rmtree(HOST_DATA_PATH)
-        except FileNotFoundError:
-            pass
+        _clean_host_data()
 
     def signal_handler(signum, frame):
-        cleanup_docker()
+        cleanup()
         sys.exit(0)
-
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Pre-flight cleanup: remove any existing container with the same name
     print(f"Ensuring no leftover container with name {container_name}...")
     subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
-
-    rootless = is_rootless_docker()
-    if rootless:
-        print("Detected rootless Docker, skipping --user flag")
 
     docker_cmd = [
         "docker",
@@ -653,9 +428,9 @@ def run_docker_image(target: str, args=None) -> None:
         container_name,
         "--init",
         "--platform",
-        DOCKER_PLATFORM,
+        CONFIG.DOCKER_PLATFORM,
         "--cpuset-cpus",
-        f"{DOCKER_CPU_SET}",
+        f"{CONFIG.docker_cpu_set}",
         "--cpu-shares",
         "2048",
         "--cpu-quota",
@@ -685,49 +460,46 @@ def run_docker_image(target: str, args=None) -> None:
         "--cap-add",
         "IPC_LOCK",
         "-v",
-        f"{HOST_DATA_PATH}:{CONTAINER_DATA_PATH}",
+        f"{CONFIG.host_data_path}:{CONFIG.CONTAINER_DATA_PATH}",
     ]
 
     # In rootful Docker, run as the host user so files are owned correctly.
     # In rootless Docker, container root already maps to the host user,
     # so --user would cause double UID remapping and permission errors.
-    if not rootless:
+    rootless = is_rootless_docker()
+    if rootless:
+        print("Detected rootless Docker, skipping --user flag")
+    else:
         docker_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
 
     # Standard JAM fuzz packaging environment variables (see fuzz-proto/README.md).
     # Set first so target.json `env` and --target-env can still override them.
-    spec = args.spec if (args and hasattr(args, 'spec') and args.spec) else os.environ.get('JAM_FUZZ_SPEC', 'tiny')
     docker_cmd.extend([
         "-e", "JAM_FUZZ=1",
-        "-e", f"JAM_FUZZ_SPEC={spec}",
-        "-e", f"JAM_FUZZ_DATA_PATH={CONTAINER_DATA_PATH}",
-        "-e", f"JAM_FUZZ_SOCK_PATH={CONTAINER_SOCK_PATH}",
-        "-e", f"JAM_FUZZ_LOG_LEVEL={os.environ.get('JAM_FUZZ_LOG_LEVEL', 'info')}",
+        "-e", f"JAM_FUZZ_SPEC={CONFIG.spec}",
+        "-e", f"JAM_FUZZ_DATA_PATH={CONFIG.CONTAINER_DATA_PATH}",
+        "-e", f"JAM_FUZZ_SOCK_PATH={CONFIG.CONTAINER_SOCK_PATH}",
+        "-e", f"JAM_FUZZ_LOG_LEVEL={CONFIG.log_level}",
     ])
 
-    if env:
-        for var in env.split():
-            docker_cmd.extend(["-e", var])
+    for var in f"{target.env or ''} {args.target_env}".split():
+        docker_cmd.extend(["-e", var])
 
-    if args and args.target_env:
-        for var in args.target_env.split():
-            docker_cmd.extend(["-e", var])
-
-    if image == DEFAULT_DOCKER_IMAGE:
+    if target.is_repo_target():
+        # The target's image/cmd were overwritten upstream to wrap a host
+        # binary; mount its downloaded directory at /jam so it's executable.
         docker_cmd.extend(["-w", "/jam"])
         docker_cmd.extend(["-e", "HOME=/jam"])
-        docker_cmd.extend(["-v", f"{TARGETS_DIR}/{target}/latest:/jam"])
+        docker_cmd.extend(["-v", f"{CONFIG.targets_dir}/{target.name}/latest:/jam"])
 
-    docker_cmd.append(image)
+    docker_cmd.append(target.image)
 
     # Handle cmd as string
-    if cmd:
-        import shlex
-        docker_cmd.extend(shlex.split(cmd))
+    if target.cmd:
+        docker_cmd.extend(shlex.split(target.cmd))
 
     # Add priority args for Linux if requested
-    current_os = get_os()
-    if current_os == "linux" and args and getattr(args, "docker_elevate_priority", False):
+    if args.docker_elevate_priority and platform.system().lower() == "linux":
         priority_cmd = [
             "sudo",
             "chrt",
@@ -741,7 +513,7 @@ def run_docker_image(target: str, args=None) -> None:
             "-n0",
             "taskset",
             "-c",
-            f"{DOCKER_CPU_SET}",
+            f"{CONFIG.docker_cpu_set}",
         ]
         docker_cmd = priority_cmd + docker_cmd
 
@@ -751,26 +523,53 @@ def run_docker_image(target: str, args=None) -> None:
         exit_code = process.wait()
         print(f"Target process exited with status: {exit_code}")
     finally:
-        cleanup_docker()
+        cleanup()
 
 
-def print_target_info(target: Target, os_name: str) -> None:
+def run_target(target: Target, args) -> None:
+    if not target.cmd:
+        print(f"Error: No run command specified for {target.name}")
+        return
+
+    target_dir = Path(f"{CONFIG.targets_dir}/{target.name}/latest")
+    if not target_dir.exists():
+        print(f"Error: Target dir not found: {target_dir}")
+        print(f"Get the target first with: get {target.name}")
+        sys.exit(1)
+
+    full_command = f"./{target.cmd}"
+    if target.args is not None:
+        full_command += f" {target.args}"
+    if args.target_args:
+        full_command += f" {args.target_args}"
+
+    # Ensure the default Docker image is available locally
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", CONFIG.DEFAULT_DOCKER_IMAGE],
+            check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        print(f"Docker image '{CONFIG.DEFAULT_DOCKER_IMAGE}' not found locally. Pulling...")
+        subprocess.run(
+            ["docker", "pull", "--platform", CONFIG.DOCKER_PLATFORM, CONFIG.DEFAULT_DOCKER_IMAGE],
+            check=True,
+        )
+    # Wrap the host binary in a dedicated default Docker image.
+    # `target.repo` is left intact, which run_docker_image uses as the
+    # signal to mount the downloaded host-binary directory into /jam.
+    target.image = CONFIG.DEFAULT_DOCKER_IMAGE
+    target.cmd = full_command
+    run_docker_image(target, args)
+
+
+def print_target_info(target: Target) -> None:
     """Print detailed information about a target."""
-    print(f"\n=== {target.name.upper()} ===")
     print(f"Name: {target.name}")
 
-    # Show gp_version
     if target.gp_version:
         print(f"GP Version: {target.gp_version}")
 
-    # Show OS support
-    supported_oses = []
-    for os_check in ["linux", "macos"]:
-        if target.supports_os(os_check):
-            supported_oses.append(os_check)
-    print(f"Supported OS: {', '.join(supported_oses)}")
-
-    # Show target type
     target_type = []
     if target.is_docker_target():
         target_type.append("Docker")
@@ -778,346 +577,138 @@ def print_target_info(target: Target, os_name: str) -> None:
         target_type.append("Repository")
     print(f"Type: {', '.join(target_type)}")
 
-    # Check if target is downloaded/available
-    target_dir = Path(f"{TARGETS_DIR}/{target.name}/latest")
     if target.is_repo_target():
         print(f"Repository: https://github.com/{target.repo}")
+        target_dir = Path(f"{CONFIG.targets_dir}/{target.name}/latest")
         if target_dir.exists():
             print(f"Downloaded: {target_dir}")
     elif target.is_docker_target():
-        # Check if Docker image exists locally
         try:
-            print_docker_image_info(target.get_image_with_tag())
+            print_docker_image_info(target.image)
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("Status: Not downloaded (Docker image not found locally)")
     else:
         print("Status: Not downloaded")
 
-    if target.clone:
-        print(f"Clone Mode: {'Yes' if target.clone == 1 else 'No'}")
-
     if target.file:
-        if isinstance(target.cmd, dict):
-            print("Files:")
-            for os_key, file_path in target.file.items():
-                print(f"  {os_key}: {file_path}")
-        else:
-            print(f"File: {target.file}")
-
+        print(f"File: {target.file}")
     if target.cmd:
-        if isinstance(target.cmd, dict):
-            print("Commands:")
-            for os_key, cmd in target.cmd.items():
-                print(f"  {os_key}: {cmd}")
-        else:
-            print(f"Command: {target.cmd}")
-
+        print(f"Command: {target.cmd}")
     if target.args:
         print(f"Arguments: {target.args}")
-
     if target.env:
         print(f"Environment: {target.env}")
 
 
-def handle_info_action(target: str, os_name: str) -> bool:
-    """Handle the info action for a target or all targets."""
-    if target == "all":
-        for target_name in get_available_targets():
-            handle_info_action(target_name, os_name)
-    else:
-        target_obj = get_target(target)
-        if target_obj is None:
-            return False
-        print_target_info(target_obj, os_name)
+def handle_info_action(target: Target) -> bool:
+    """Handle the info action for a target."""
+    print_target_info(target)
     return True
 
 
-def handle_get_action(target: str, os_name: str) -> bool:
-    """Handle the get action for a target or all targets."""
-    print(f"Downloading {target} for {os_name}...")
-
-    if target == "all":
-        available_targets = get_available_targets()
-        failed_targets = []
-        for target in available_targets:
-            print("----------------------------------")
-            success = handle_get_action(target, os_name)
-            if not success:
-                failed_targets.append(target)
-        if not failed_targets:
-            print("All targets downloaded successfully!")
-            return True
-        else:
-            print(
-                f"Failed to download the following targets: {' '.join(failed_targets)}"
-            )
-            total_targets = len(available_targets)
-            successful = total_targets - len(failed_targets)
-            print(
-                f"Successfully downloaded: {successful} out of {total_targets} targets"
-            )
-            return False
-    elif is_repo_target(target):
-        if target_supports_os(target, os_name):
-            return get_github_release(target, os_name)
-        else:
-            return False
-    elif is_docker_target(target):
-        return get_docker_image(target)
-    else:
-        available_targets = get_available_targets()
-        print(f"Unknown target '{target}'")
-        print(f"Available targets: {' '.join(available_targets)} all")
-        return False
+def handle_get_action(target: Target) -> bool:
+    """Handle the get action for a target."""
+    print(f"Downloading {target.name}...")
+    if target.is_repo_target():
+        return get_github_release(target)
+    return get_docker_image(target)
 
 
-def handle_list_action(gp_version: Optional[str] = None) -> bool:
+def handle_list_action(all_targets: Dict[str, Target], gp_version: Optional[str]) -> bool:
     """Handle the list action to show all available targets."""
-    available_targets = get_available_targets()
+    names = sorted(all_targets)
 
-    if gp_version == "all":
-        gp_version = None
-
-    # Filter by gp_version if provided
     if gp_version:
-        filtered_targets = []
-        for target_name in available_targets:
-            target = get_target(target_name)
-            if target and target.gp_version == gp_version:
-                filtered_targets.append(target_name)
-        available_targets = filtered_targets
-
-        if not available_targets:
+        filtered = [n for n in names if all_targets[n].gp_version == gp_version]
+        if not filtered:
             print(f"No targets found for gp-version: {gp_version}")
             return True
+        for name in filtered:
+            print(name)
+        return True
 
-        for target in available_targets:
-            print(target)
-    else:
-        # Group targets by gp_version
-        gp_version_groups = {}
-        for target_name in available_targets:
-            target = get_target(target_name)
-            if target:
-                target_gp_version = target.gp_version if target.gp_version else "unknown"
-                if target_gp_version not in gp_version_groups:
-                    gp_version_groups[target_gp_version] = []
-                gp_version_groups[target_gp_version].append(target_name)
+    # Group by gp_version, most recent first
+    groups: Dict[str, List[str]] = {}
+    for name in names:
+        v = all_targets[name].gp_version or "unknown"
+        groups.setdefault(v, []).append(name)
 
-        # Sort gp versions in descending order (most recent first)
-        sorted_gp_versions = sorted(gp_version_groups.keys(), reverse=True)
-
-        # Print targets grouped by gp_version
-        for i, gp_ver in enumerate(sorted_gp_versions):
-            if i > 0:
-                print()  # Add blank line between groups
-            print(gp_ver)
-            print("=" * len(gp_ver))
-            for target in sorted(gp_version_groups[gp_ver]):
-                print(target)
-
+    for i, gp_ver in enumerate(sorted(groups, reverse=True)):
+        if i > 0:
+            print()
+        print(gp_ver)
+        print("=" * len(gp_ver))
+        for name in sorted(groups[gp_ver]):
+            print(name)
     return True
 
 
-def handle_clean_action(target: str) -> bool:
-    """Handle the clean action for a target or all targets."""
-    if target == "all":
-        targets_dir = Path(f"{TARGETS_DIR}")
-        if targets_dir.exists():
-            print("Cleaning all target files...")
-            for item in targets_dir.iterdir():
-                if item.is_dir():
-                    print(f"Removing {item}")
-                    shutil.rmtree(item)
-            print("All target files cleaned successfully!")
-        else:
-            print("No target files to clean.")
-        return True
+def handle_clean_action(target: Target) -> bool:
+    """Handle the clean action for a target."""
+    cleaned = False
+
+    target_dir = Path(f"{CONFIG.targets_dir}/{target.name}")
+    if target_dir.exists():
+        print(f"Cleaning target dir {target_dir}...")
+        shutil.rmtree(target_dir)
+        cleaned = True
+
+    if target.is_docker_target():
+        result = subprocess.run(
+            ["docker", "image", "inspect", target.image],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            print(f"Removing Docker image {target.image}...")
+            subprocess.run(["docker", "rmi", "-f", target.image], check=False)
+            cleaned = True
+
+    if cleaned:
+        print(f"Target {target.name} cleaned successfully!")
     else:
-        target_dir = Path(f"{TARGETS_DIR}/{target}")
-        if target_dir.exists():
-            print(f"Cleaning target {target}...")
-            shutil.rmtree(target_dir)
-            print(f"Target {target} cleaned successfully!")
-        else:
-            print(f"Target {target} not found or already clean.")
-        return True
+        print(f"Target {target.name} not found or already clean.")
+    return True
 
 
-def handle_run_action(target: str, os_name: str, args=None) -> bool:
+def handle_run_action(target: Target, args) -> bool:
     """Handle the run action for a target."""
-    if is_docker_target(target):
-        run_docker_image(target, args)
-        return True
-    elif is_repo_target(target):
-        run_target(target, os_name, args)
-        return True
-    else:
-        available_targets = get_available_targets()
-        print(f"Unknown target '{target}'")
-        print(f"Available targets: {' '.join(available_targets)}")
-        return False
-
-
-def run_target(target: str, os_name: str, args=None) -> None:
-    if target not in TARGETS:
-        print(f"Error: Target {target} not found")
-        return
-
-    target_obj = TARGETS[target]
-    command = target_obj.get_cmd(os_name)
-
-    if not command:
-        print(f"Error: No run command specified for {target} on {os_name}")
-        return
-
-    target_dir = Path(f"{TARGETS_DIR}/{target}/latest")
-    if not target_dir.exists():
-        print(f"Error: Target dir not found: {target_dir}")
-        # Try to find the newest directory as fallback
-        base_dir = Path(f"targets/{target}")
-        if base_dir.exists():
-            try:
-                newest_dir = max(base_dir.iterdir(), key=lambda p: p.stat().st_mtime)
-                if newest_dir.is_dir():
-                    print(f"Using newest available directory: {newest_dir}")
-                    target_dir = newest_dir
-                else:
-                    raise ValueError("No directories found")
-            except (ValueError, OSError):
-                print(f"Get the target first with: get {target}")
-                sys.exit(1)
-        else:
-            print(f"Get the target first with: get {target}")
-            sys.exit(1)
-
-    full_command = f"./{command}"
-    command_args = target_obj.get_args()
-    if command_args is not None:
-        full_command += f" {command_args}"
-    if args.target_args:
-        full_command += f" {args.target_args}"
-
-    if RUN_DOCKER == 1:
-        # Ensure the default Docker image is available locally
-        try:
-            subprocess.run(
-                ["docker", "image", "inspect", DEFAULT_DOCKER_IMAGE],
-                check=True, capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            print(f"Docker image '{DEFAULT_DOCKER_IMAGE}' not found locally. Pulling...")
-            subprocess.run(
-                ["docker", "pull", "--platform", DOCKER_PLATFORM, DEFAULT_DOCKER_IMAGE],
-                check=True,
-            )
-        # Overwrite target information and run it in a dedicated docker image
-        target_obj = TARGETS[target]
-        target_obj.image = DEFAULT_DOCKER_IMAGE
-        target_obj.cmd = full_command
+    if target.is_docker_target():
         run_docker_image(target, args)
     else:
-        cleanup_done = False
-        target_pid = None
-
-        def cleanup():
-            os.chdir(CURRENT_DIR)
-            nonlocal cleanup_done, target_pid
-            if cleanup_done:
-                return
-            cleanup_done = True
-
-            print(f"Cleaning up {target}...")
-            if target_pid:
-                print(f"Killing target {target_pid}...")
-                try:
-                    os.kill(target_pid, signal.SIGTERM)
-                    time.sleep(1)
-                    os.kill(target_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            try:
-                # Remove ephemeral data directory and socket files created during this run
-                shutil.rmtree(HOST_DATA_PATH)
-            except FileNotFoundError:
-                pass
-
-        def signal_handler(signum, frame):
-            cleanup()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-        target_obj = TARGETS[target]
-        env = target_obj.env
-        if env:
-            # Export environment variables
-            for var in env.split():
-                if "=" in var:
-                    key, value = var.split("=", 1)
-                    os.environ[key] = value
-
-        # Set JAM_FUZZ_SPEC from CLI arg (overrides env var)
-        if args and hasattr(args, 'spec') and args.spec:
-            os.environ['JAM_FUZZ_SPEC'] = args.spec
-
-        if args.target_env:
-            for var in args.target_env.split():
-                if "=" in var:
-                    key, value = var.split("=", 1)
-                    os.environ[key] = value
-
-        try:
-            os.chdir(target_dir)
-            process = subprocess.Popen(full_command, shell=True)
-            target_pid = process.pid
-            print(f"Waiting for target termination (pid={target_pid})")
-            process.wait()
-        finally:
-            cleanup()
+        run_target(target, args)
+    return True
 
 
 def main():
-    global RUN_DOCKER
+    global CONFIG
 
     parser = create_parser()
     args = parser.parse_args()
 
+    CONFIG = Config.from_args(args)
+    all_targets = load_targets()
+
     action = args.action
     target = getattr(args, 'target', None)
 
-    # Handle Docker override from command line (only for run action)
-    if action == "run":
-        if hasattr(args, "docker") and args.docker:
-            RUN_DOCKER = 1
-        elif hasattr(args, "no_docker") and args.no_docker:
-            RUN_DOCKER = 0
-
-    # Determine OS
-    if args.os:
-        os_name = args.os
-    elif RUN_DOCKER == 1:
-        # use linux, since we are running in a fixed Debian Docker image
-        os_name = "linux"
-    else:
-        os_name = get_os()
-        if os_name is None:
-            print("Unsupported OS", file=sys.stderr)
-            sys.exit(1)
-
     success = False
-    if action == "info":
-        success = handle_info_action(target, os_name)
-    elif action == "get":
-        success = handle_get_action(target, os_name)
-    elif action == "run":
-        success = handle_run_action(target, os_name, args)
-    elif action == "clean":
-        success = handle_clean_action(target)
-    elif action == "list":
-        gp_version = getattr(args, 'gp_version', None)
-        success = handle_list_action(gp_version)
+    if action == "list":
+        success = handle_list_action(all_targets, args.gp_version)
+    else:
+        # info / get / run / clean all need a single resolved Target
+        target_obj = all_targets.get(target)
+        if target_obj is None:
+            print(f"Unknown target '{target}'")
+            print(f"Available targets: {' '.join(sorted(all_targets))}")
+            sys.exit(1)
+        if action == "info":
+            success = handle_info_action(target_obj)
+        elif action == "get":
+            success = handle_get_action(target_obj)
+        elif action == "run":
+            success = handle_run_action(target_obj, args)
+        elif action == "clean":
+            success = handle_clean_action(target_obj)
 
     if not success:
         sys.exit(1)
